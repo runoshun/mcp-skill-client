@@ -9,6 +9,11 @@ SKILL_OVERVIEW
 
 ## Setup
 
+Set session name (optional):
+```bash
+export MCP_SESSION=myproject
+```
+
 Start the MCP daemon:
 ```bash
 $SKILL_DIR/scripts/mcp start

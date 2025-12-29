@@ -46,7 +46,8 @@ Create `scripts/mcp` (executable):
 ```bash
 #!/bin/bash
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-exec npx github:runoshun/mcp-skill-client --config "$SKILL_DIR/config.json" "$@"
+SESSION="${MCP_SESSION:-default}"
+exec npx github:runoshun/mcp-skill-client --config "$SKILL_DIR/config.json" --session "$SESSION" "$@"
 ```
 
 Make it executable:
@@ -57,6 +58,9 @@ chmod +x scripts/mcp
 ### Step 3: Fetch Tool List
 
 ```bash
+# Set session name (optional, defaults to "default")
+export MCP_SESSION=dev
+
 # Start daemon temporarily
 ./scripts/mcp start
 
@@ -82,6 +86,11 @@ description: [What the skill does and when to use it]
 [Brief description of what this skill enables]
 
 ## Setup
+
+Set session name (optional):
+\`\`\`bash
+export MCP_SESSION=myproject
+\`\`\`
 
 Start the MCP daemon:
 \`\`\`bash
@@ -124,7 +133,8 @@ $SKILL_DIR/scripts/mcp stop
 ```bash
 #!/bin/bash
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-exec npx github:runoshun/mcp-skill-client --config "$SKILL_DIR/config.json" "$@"
+SESSION="${MCP_SESSION:-default}"
+exec npx github:runoshun/mcp-skill-client --config "$SKILL_DIR/config.json" --session "$SESSION" "$@"
 ```
 
 ### SKILL.md (excerpt)
@@ -142,6 +152,7 @@ Browser automation with persistent session via MCP.
 ## Setup
 
 \`\`\`bash
+export MCP_SESSION=myproject  # optional
 $SKILL_DIR/scripts/mcp start
 \`\`\`
 
@@ -166,6 +177,39 @@ $SKILL_DIR/scripts/mcp call browser_click element="Submit" ref=e12
 \`\`\`
 ```
 
+## Session Management
+
+Sessions allow parallel usage from different projects:
+
+```bash
+# Project A
+cd ~/project-a
+export MCP_SESSION=project-a
+./scripts/mcp start  # port auto-assigned (e.g., 8940)
+
+# Project B (different terminal)
+cd ~/project-b
+export MCP_SESSION=project-b
+./scripts/mcp start  # different port auto-assigned (e.g., 8941)
+```
+
+Session state is stored in `.<skill-name>/` in the current directory:
+```
+.skill-name/
+├── sessions.json       # All session info
+├── project-a/
+│   ├── daemon.log
+│   └── output/
+└── project-b/
+    ├── daemon.log
+    └── output/
+```
+
+List all sessions:
+```bash
+./scripts/mcp sessions
+```
+
 ## Tool Documentation Format
 
 When documenting tools in SKILL.md:
@@ -184,6 +228,7 @@ Copy templates from `assets/` directory:
 ## Tips
 
 - **$SKILL_DIR**: Use this placeholder for skill directory path
+- **MCP_SESSION**: Environment variable for session name (default: "default")
 - **Session persistence**: Daemon maintains browser/connection state between calls
 - **Error handling**: Check daemon status if tools fail (`$SKILL_DIR/scripts/mcp status`)
-- **Multiple skills**: Each skill should use different port (`--port` option)
+- **Parallel usage**: Each session gets auto-assigned port, no manual port management needed
