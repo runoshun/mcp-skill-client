@@ -1,0 +1,15 @@
+{
+  "name": "mcp-skill-client",
+  "version": "1.0.0",
+  "description": "Universal MCP client for skill-based automation",
+  "type": "module",
+  "bin": {
+    "mcp-skill-client": "./client.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

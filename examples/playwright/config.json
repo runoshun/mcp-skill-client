@@ -1,0 +1,6 @@
+{
+  "name": "playwright-mcp",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["@playwright/mcp@0.0.53", "--headless", "--browser", "chromium", "--no-sandbox"]
+}
