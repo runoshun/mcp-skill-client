@@ -40,22 +40,37 @@ function parseArgs(args) {
   };
   
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--config' && args[i + 1]) {
+    const arg = args[i];
+    
+    // Handle --option=value format
+    if (arg.startsWith('--') && arg.includes('=')) {
+      const eqIndex = arg.indexOf('=');
+      const key = arg.substring(2, eqIndex);
+      const value = arg.substring(eqIndex + 1);
+      
+      switch (key) {
+        case 'config': result.config = value; break;
+        case 'port': result.daemonPort = parseInt(value, 10); break;
+        case 'format': result.format = value; break;
+        case 'output-dir': result.outputDir = value; break;
+        default: result.toolArgs.push(arg);
+      }
+    } else if (arg === '--config' && args[i + 1]) {
       result.config = args[i + 1];
       i++;
-    } else if (args[i] === '--port' && args[i + 1]) {
+    } else if (arg === '--port' && args[i + 1]) {
       result.daemonPort = parseInt(args[i + 1], 10);
       i++;
-    } else if (args[i] === '--format' && args[i + 1]) {
+    } else if (arg === '--format' && args[i + 1]) {
       result.format = args[i + 1];
       i++;
-    } else if (args[i] === '--output-dir' && args[i + 1]) {
+    } else if (arg === '--output-dir' && args[i + 1]) {
       result.outputDir = args[i + 1];
       i++;
     } else if (!result.command) {
-      result.command = args[i];
+      result.command = arg;
     } else {
-      result.toolArgs.push(args[i]);
+      result.toolArgs.push(arg);
     }
   }
   
