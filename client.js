@@ -34,7 +34,9 @@ function parseArgs(args) {
     config: null,
     command: null,
     toolArgs: [],
-    daemonPort: 8940
+    daemonPort: 8940,
+    format: 'auto',
+    outputDir: null
   };
   
   for (let i = 0; i < args.length; i++) {
@@ -43,6 +45,12 @@ function parseArgs(args) {
       i++;
     } else if (args[i] === '--port' && args[i + 1]) {
       result.daemonPort = parseInt(args[i + 1], 10);
+      i++;
+    } else if (args[i] === '--format' && args[i + 1]) {
+      result.format = args[i + 1];
+      i++;
+    } else if (args[i] === '--output-dir' && args[i + 1]) {
+      result.outputDir = args[i + 1];
       i++;
     } else if (!result.command) {
       result.command = args[i];
@@ -69,6 +77,7 @@ function loadConfig(configPath) {
   const config = JSON.parse(fs.readFileSync(absPath, 'utf8'));
   config._configDir = path.dirname(absPath);
   config._stateDir = path.join(config._configDir, '.mcp-client');
+  config._outputDir = path.join(config._stateDir, 'output');
   
   // Ensure state directory exists
   if (!fs.existsSync(config._stateDir)) {
@@ -91,6 +100,10 @@ Commands:
   tools                  List available tools
   call <tool> [args...]  Call MCP tool
 
+Options:
+  --format <auto|json>   Output format (default: auto)
+  --output-dir <dir>     Directory for saving images/audio
+
 Config file format (config.json):
   {
     "name": "my-mcp-server",
@@ -109,8 +122,117 @@ Examples:
 `);
 }
 
+// ============ Output Formatting ============
+
+function getOutputDir(config, outputDir) {
+  const dir = outputDir || config._outputDir;
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function getMimeExtension(mimeType) {
+  const map = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'audio/wav': 'wav',
+    'audio/mp3': 'mp3',
+    'audio/mpeg': 'mp3',
+    'audio/ogg': 'ogg'
+  };
+  return map[mimeType] || 'bin';
+}
+
+function saveBase64File(data, mimeType, outputDir, prefix = 'output') {
+  const ext = getMimeExtension(mimeType);
+  const timestamp = Date.now();
+  const filename = `${prefix}-${timestamp}.${ext}`;
+  const filepath = path.join(outputDir, filename);
+  
+  fs.writeFileSync(filepath, Buffer.from(data, 'base64'));
+  return filepath;
+}
+
+function formatToolsAuto(result) {
+  if (!result.tools || !Array.isArray(result.tools)) {
+    return JSON.stringify(result, null, 2);
+  }
+  
+  const lines = [];
+  for (const tool of result.tools) {
+    const name = tool.name.padEnd(30);
+    const desc = tool.description || '';
+    lines.push(`${name} ${desc}`);
+  }
+  return lines.join('\n');
+}
+
+function formatCallResultAuto(result, config, outputDir) {
+  const output = [];
+  
+  // Handle structured content
+  if (result.structuredContent) {
+    output.push(JSON.stringify(result.structuredContent, null, 2));
+  }
+  
+  // Handle content array
+  if (result.content && Array.isArray(result.content)) {
+    for (const item of result.content) {
+      switch (item.type) {
+        case 'text':
+          output.push(item.text);
+          break;
+          
+        case 'image': {
+          const dir = getOutputDir(config, outputDir);
+          const filepath = saveBase64File(item.data, item.mimeType, dir, 'image');
+          output.push(`[Image saved: ${filepath}]`);
+          break;
+        }
+        
+        case 'audio': {
+          const dir = getOutputDir(config, outputDir);
+          const filepath = saveBase64File(item.data, item.mimeType, dir, 'audio');
+          output.push(`[Audio saved: ${filepath}]`);
+          break;
+        }
+        
+        case 'resource_link':
+          output.push(`[Resource: ${item.uri}${item.name ? ` (${item.name})` : ''}]`);
+          break;
+          
+        case 'resource':
+          if (item.resource) {
+            if (item.resource.text) {
+              output.push(item.resource.text);
+            } else if (item.resource.blob) {
+              const dir = getOutputDir(config, outputDir);
+              const mimeType = item.resource.mimeType || 'application/octet-stream';
+              const filepath = saveBase64File(item.resource.blob, mimeType, dir, 'resource');
+              output.push(`[Resource saved: ${filepath}]`);
+            }
+          }
+          break;
+          
+        default:
+          output.push(JSON.stringify(item));
+      }
+    }
+  }
+  
+  // Handle error
+  if (result.isError) {
+    return `[Error] ${output.join('\n')}`;
+  }
+  
+  return output.join('\n');
+}
+
 async function main() {
-  const { config: configPath, command, toolArgs, daemonPort } = parseArgs(args);
+  const { config: configPath, command, toolArgs, daemonPort, format, outputDir } = parseArgs(args);
   
   if (!command) {
     printUsage();
@@ -127,13 +249,13 @@ async function main() {
       await stopDaemon(config);
       break;
     case 'status':
-      await statusDaemon(config);
+      await statusDaemon(config, format);
       break;
     case 'tools':
-      await listTools(config);
+      await listTools(config, format);
       break;
     case 'call':
-      await callTool(config, toolArgs);
+      await callTool(config, toolArgs, format, outputDir);
       break;
     case 'daemon-run':
       // Internal command - run as daemon process
@@ -214,7 +336,7 @@ async function stopDaemon(config) {
   if (fs.existsSync(portFile)) fs.unlinkSync(portFile);
 }
 
-async function statusDaemon(config) {
+async function statusDaemon(config, format) {
   const pidFile = path.join(config._stateDir, 'daemon.pid');
   const portFile = path.join(config._stateDir, 'daemon.port');
   
@@ -229,14 +351,24 @@ async function statusDaemon(config) {
   try {
     process.kill(pid, 0);
     const status = await httpGet(`http://localhost:${port}/status`);
-    console.log(`Daemon running (PID: ${pid}, port: ${port})`);
-    console.log(`Status: ${status}`);
+    
+    if (format === 'json') {
+      console.log(status);
+    } else {
+      const parsed = JSON.parse(status);
+      console.log(`Daemon running (PID: ${pid}, port: ${port})`);
+      console.log(`Server: ${parsed.server}`);
+      console.log(`Connected: ${parsed.connected}`);
+      if (parsed.lastError) {
+        console.log(`Last error: ${parsed.lastError}`);
+      }
+    }
   } catch (e) {
     console.log(`Daemon not responding (PID: ${pid})`);
   }
 }
 
-async function listTools(config) {
+async function listTools(config, format) {
   const portFile = path.join(config._stateDir, 'daemon.port');
   
   if (!fs.existsSync(portFile)) {
@@ -248,14 +380,20 @@ async function listTools(config) {
   
   try {
     const result = await httpGet(`http://localhost:${port}/tools`);
-    console.log(result);
+    
+    if (format === 'json') {
+      console.log(result);
+    } else {
+      const parsed = JSON.parse(result);
+      console.log(formatToolsAuto(parsed));
+    }
   } catch (e) {
     console.error('Error:', e.message);
     process.exit(1);
   }
 }
 
-async function callTool(config, toolArgs) {
+async function callTool(config, toolArgs, format, outputDir) {
   if (toolArgs.length === 0) {
     console.error('Usage: mcp-skill-client --config <config> call <tool> [key=value...]');
     process.exit(1);
@@ -293,7 +431,13 @@ async function callTool(config, toolArgs) {
       tool: toolName,
       arguments: toolArguments
     });
-    console.log(result);
+    
+    if (format === 'json') {
+      console.log(result);
+    } else {
+      const parsed = JSON.parse(result);
+      console.log(formatCallResultAuto(parsed, config, outputDir));
+    }
   } catch (e) {
     console.error('Error:', e.message);
     process.exit(1);
