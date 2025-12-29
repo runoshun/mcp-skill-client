@@ -1,0 +1,36 @@
+---
+name: SKILL_NAME
+description: SKILL_DESCRIPTION
+---
+
+# SKILL_TITLE
+
+SKILL_OVERVIEW
+
+## Setup
+
+Start the MCP daemon:
+```bash
+npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json start
+```
+
+Check status:
+```bash
+npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json status
+```
+
+## Available Tools
+
+TOOL_DOCUMENTATION
+
+## Workflow
+
+1. Start daemon (once per session)
+2. Call tools as needed
+3. Stop daemon when done
+
+## Cleanup
+
+```bash
+npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json stop
+```

@@ -1,0 +1,7 @@
+{
+  "name": "SKILL_NAME",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["@org/mcp-package@version"],
+  "env": {}
+}
