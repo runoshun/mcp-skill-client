@@ -11,12 +11,12 @@ SKILL_OVERVIEW
 
 Start the MCP daemon:
 ```bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json start
+$SKILL_DIR/scripts/mcp start
 ```
 
 Check status:
 ```bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json status
+$SKILL_DIR/scripts/mcp status
 ```
 
 ## Available Tools
@@ -32,5 +32,5 @@ TOOL_DOCUMENTATION
 ## Cleanup
 
 ```bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json stop
+$SKILL_DIR/scripts/mcp stop
 ```

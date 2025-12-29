@@ -7,24 +7,25 @@ description: Create skills that wrap MCP (Model Context Protocol) servers for us
 
 Create skills that wrap MCP servers for browser automation, database access, API integrations, and more. Generated skills use `mcp-skill-client` to maintain persistent MCP sessions.
 
-## Quick Start
-
-1. Start daemon to fetch tools: `npx github:runoshun/mcp-skill-client --config config.json start`
-2. List available tools: `npx github:runoshun/mcp-skill-client --config config.json tools`
-3. Create skill folder with SKILL.md and config.json
-
 ## Skill Structure
 
 ```
 skill-name/
 ├── SKILL.md        # Skill instructions with tool documentation
-└── config.json     # MCP server configuration
+├── config.json     # MCP server configuration
+└── scripts/
+    └── mcp         # Wrapper script for short commands
 ```
 
 ## Creating a Skill
 
-### Step 1: Create config.json
+### Step 1: Create skill directory and config.json
 
+```bash
+mkdir -p skill-name/scripts
+```
+
+Create `config.json`:
 ```json
 {
   "name": "skill-name",
@@ -39,20 +40,34 @@ skill-name/
 - `stdio`: Spawns MCP server as subprocess (most common)
 - `http`: Connects to running MCP server at URL
 
-### Step 2: Fetch Tool List
+### Step 2: Create wrapper script
+
+Create `scripts/mcp` (executable):
+```bash
+#!/bin/bash
+SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+exec npx github:runoshun/mcp-skill-client --config "$SKILL_DIR/config.json" "$@"
+```
+
+Make it executable:
+```bash
+chmod +x scripts/mcp
+```
+
+### Step 3: Fetch Tool List
 
 ```bash
 # Start daemon temporarily
-npx github:runoshun/mcp-skill-client --config config.json start
+./scripts/mcp start
 
 # Get tool list (copy this output for SKILL.md)
-npx github:runoshun/mcp-skill-client --config config.json tools
+./scripts/mcp tools
 
 # Stop daemon
-npx github:runoshun/mcp-skill-client --config config.json stop
+./scripts/mcp stop
 ```
 
-### Step 3: Write SKILL.md
+### Step 4: Write SKILL.md
 
 Use this template:
 
@@ -70,7 +85,7 @@ description: [What the skill does and when to use it]
 
 Start the MCP daemon:
 \`\`\`bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json start
+$SKILL_DIR/scripts/mcp start
 \`\`\`
 
 ## Available Tools
@@ -80,25 +95,14 @@ npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json start
 ### tool_name
 [Description from MCP server]
 
-**Parameters:**
-- `param1` (required): Description
-- `param2` (optional): Description
-
-**Example:**
 \`\`\`bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json call tool_name param1=value
+$SKILL_DIR/scripts/mcp call tool_name param1=value
 \`\`\`
-
-## Workflow
-
-1. Start daemon (once per session)
-2. Call tools as needed
-3. Stop daemon when done
 
 ## Cleanup
 
 \`\`\`bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json stop
+$SKILL_DIR/scripts/mcp stop
 \`\`\`
 ```
 
@@ -111,8 +115,16 @@ npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json stop
   "name": "playwright-mcp",
   "transport": "stdio",
   "command": "npx",
-  "args": ["@anthropic/mcp-playwright@latest", "--headless", "--browser", "chromium"]
+  "args": ["@playwright/mcp@latest", "--headless", "--browser", "chromium", "--no-sandbox"]
 }
+```
+
+### scripts/mcp
+
+```bash
+#!/bin/bash
+SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+exec npx github:runoshun/mcp-skill-client --config "$SKILL_DIR/config.json" "$@"
 ```
 
 ### SKILL.md (excerpt)
@@ -130,30 +142,27 @@ Browser automation with persistent session via MCP.
 ## Setup
 
 \`\`\`bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json start
+$SKILL_DIR/scripts/mcp start
 \`\`\`
 
 ## Tools
 
 ### browser_navigate
 Navigate to a URL.
-
 \`\`\`bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json call browser_navigate url=https://example.com
+$SKILL_DIR/scripts/mcp call browser_navigate url=https://example.com
+\`\`\`
+
+### browser_snapshot
+Get accessibility snapshot with element refs.
+\`\`\`bash
+$SKILL_DIR/scripts/mcp call browser_snapshot
 \`\`\`
 
 ### browser_click
-Click an element by reference or text.
-
+Click an element by reference.
 \`\`\`bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json call browser_click element="Submit" ref=e12
-\`\`\`
-
-### browser_screenshot
-Take a screenshot.
-
-\`\`\`bash
-npx github:runoshun/mcp-skill-client --config $SKILL_DIR/config.json call browser_screenshot
+$SKILL_DIR/scripts/mcp call browser_click element="Submit" ref=e12
 \`\`\`
 ```
 
@@ -163,18 +172,18 @@ When documenting tools in SKILL.md:
 
 1. **Tool name as heading** - Use `### tool_name`
 2. **Brief description** - One line explaining what it does
-3. **Parameters** - List with types and required/optional
-4. **Example** - Show actual command with realistic values
+3. **Example** - Show actual command with realistic values
 
 ## Templates
 
 Copy templates from `assets/` directory:
 - `assets/config.json` - MCP server configuration template
 - `assets/SKILL.md.template` - SKILL.md template with placeholders
+- `assets/mcp.sh` - Wrapper script template
 
 ## Tips
 
 - **$SKILL_DIR**: Use this placeholder for skill directory path
 - **Session persistence**: Daemon maintains browser/connection state between calls
-- **Error handling**: Check daemon status if tools fail
+- **Error handling**: Check daemon status if tools fail (`$SKILL_DIR/scripts/mcp status`)
 - **Multiple skills**: Each skill should use different port (`--port` option)
