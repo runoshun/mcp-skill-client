@@ -6,14 +6,15 @@
  * Supports both stdio and HTTP transports.
  * 
  * Usage:
- *   mcp-skill-client --config config.json start     # Start daemon
- *   mcp-skill-client --config config.json call <tool> [args...]  # Call tool
- *   mcp-skill-client --config config.json stop      # Stop daemon
- *   mcp-skill-client --config config.json status    # Check status
- *   mcp-skill-client --config config.json tools     # List available tools
+ *   mcp-skill-client --config config.json --session mysession start
+ *   mcp-skill-client --config config.json --session mysession call <tool> [args...]
+ *   mcp-skill-client --config config.json --session mysession stop
+ *   mcp-skill-client --config config.json --session mysession status
+ *   mcp-skill-client --config config.json --session mysession tools
  */
 
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -32,11 +33,13 @@ const args = process.argv.slice(2);
 function parseArgs(args) {
   const result = {
     config: null,
+    session: process.env.MCP_SESSION || null,
     command: null,
     toolArgs: [],
-    daemonPort: 8940,
     format: 'auto',
-    outputDir: null
+    outputDir: null,
+    // Internal use
+    _daemonPort: null
   };
   
   for (let i = 0; i < args.length; i++) {
@@ -50,22 +53,26 @@ function parseArgs(args) {
       
       switch (key) {
         case 'config': result.config = value; break;
-        case 'port': result.daemonPort = parseInt(value, 10); break;
+        case 'session': result.session = value; break;
         case 'format': result.format = value; break;
         case 'output-dir': result.outputDir = value; break;
+        case '_port': result._daemonPort = parseInt(value, 10); break;
         default: result.toolArgs.push(arg);
       }
     } else if (arg === '--config' && args[i + 1]) {
       result.config = args[i + 1];
       i++;
-    } else if (arg === '--port' && args[i + 1]) {
-      result.daemonPort = parseInt(args[i + 1], 10);
+    } else if (arg === '--session' && args[i + 1]) {
+      result.session = args[i + 1];
       i++;
     } else if (arg === '--format' && args[i + 1]) {
       result.format = args[i + 1];
       i++;
     } else if (arg === '--output-dir' && args[i + 1]) {
       result.outputDir = args[i + 1];
+      i++;
+    } else if (arg === '--_port' && args[i + 1]) {
+      result._daemonPort = parseInt(args[i + 1], 10);
       i++;
     } else if (!result.command) {
       result.command = arg;
@@ -90,62 +97,151 @@ function loadConfig(configPath) {
   }
   
   const config = JSON.parse(fs.readFileSync(absPath, 'utf8'));
+  config._configPath = absPath;
   config._configDir = path.dirname(absPath);
-  config._stateDir = path.join(config._configDir, '.mcp-client');
-  config._outputDir = path.join(config._stateDir, 'output');
-  
-  // Ensure state directory exists
-  if (!fs.existsSync(config._stateDir)) {
-    fs.mkdirSync(config._stateDir, { recursive: true });
-  }
   
   return config;
+}
+
+// ============ Session Management ============
+
+function getSessionDir(config) {
+  // State dir is ./<skill-name>/ in current working directory
+  const stateDir = path.join(process.cwd(), `.${config.name}`);
+  if (!fs.existsSync(stateDir)) {
+    fs.mkdirSync(stateDir, { recursive: true });
+  }
+  return stateDir;
+}
+
+function getSessionsFile(config) {
+  return path.join(getSessionDir(config), 'sessions.json');
+}
+
+function loadSessions(config) {
+  const sessionsFile = getSessionsFile(config);
+  if (fs.existsSync(sessionsFile)) {
+    try {
+      return JSON.parse(fs.readFileSync(sessionsFile, 'utf8'));
+    } catch (e) {
+      return {};
+    }
+  }
+  return {};
+}
+
+function saveSessions(config, sessions) {
+  const sessionsFile = getSessionsFile(config);
+  fs.writeFileSync(sessionsFile, JSON.stringify(sessions, null, 2));
+}
+
+function getSession(config, sessionName) {
+  const sessions = loadSessions(config);
+  return sessions[sessionName] || null;
+}
+
+function setSession(config, sessionName, data) {
+  const sessions = loadSessions(config);
+  sessions[sessionName] = data;
+  saveSessions(config, sessions);
+}
+
+function deleteSession(config, sessionName) {
+  const sessions = loadSessions(config);
+  delete sessions[sessionName];
+  saveSessions(config, sessions);
+}
+
+function getOutputDir(config, sessionName, outputDir) {
+  if (outputDir) {
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    return outputDir;
+  }
+  const dir = path.join(getSessionDir(config), sessionName, 'output');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function getLogFile(config, sessionName) {
+  const dir = path.join(getSessionDir(config), sessionName);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return path.join(dir, 'daemon.log');
+}
+
+// ============ Port Management ============
+
+async function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close();
+      resolve(true);
+    });
+    server.listen(port, 'localhost');
+  });
+}
+
+async function findAvailablePort(config, startPort = 8940) {
+  const sessions = loadSessions(config);
+  const usedPorts = new Set(Object.values(sessions).map(s => s.port));
+  
+  let port = startPort;
+  while (port < startPort + 1000) {
+    if (!usedPorts.has(port) && await isPortAvailable(port)) {
+      return port;
+    }
+    port++;
+  }
+  throw new Error('No available port found');
 }
 
 function printUsage() {
   console.log(`Universal MCP Skill Client
 
 Usage:
-  mcp-skill-client --config <config.json> <command> [options]
+  mcp-skill-client --config <config.json> --session <name> <command> [options]
 
 Commands:
-  start [--port PORT]    Start daemon (default port: 8940)
-  stop                   Stop daemon
+  start                  Start daemon for session
+  stop                   Stop daemon for session
   status                 Check daemon status
   tools                  List available tools
   call <tool> [args...]  Call MCP tool
+  sessions               List all sessions
 
 Options:
+  --session <name>       Session name (required, or set MCP_SESSION env)
   --format <auto|json>   Output format (default: auto)
   --output-dir <dir>     Directory for saving images/audio
+
+Environment:
+  MCP_SESSION            Default session name
 
 Config file format (config.json):
   {
     "name": "my-mcp-server",
-    "transport": "stdio",           // or "http"
-    "command": "npx",               // for stdio
+    "transport": "stdio",
+    "command": "npx",
     "args": ["@org/mcp-server@1.0.0"],
-    "env": {},                      // optional environment variables
-    "url": "http://localhost:8931/mcp"  // for http transport
+    "env": {}
   }
 
 Examples:
-  mcp-skill-client --config ./config.json start
-  mcp-skill-client --config ./config.json call browser_navigate url=https://example.com
-  mcp-skill-client --config ./config.json tools
-  mcp-skill-client --config ./config.json stop
+  mcp-skill-client --config ./config.json --session dev start
+  mcp-skill-client --config ./config.json --session dev call browser_navigate url=https://example.com
+  mcp-skill-client --config ./config.json --session dev tools
+  mcp-skill-client --config ./config.json --session dev stop
 `);
 }
 
 // ============ Output Formatting ============
-
-function getOutputDir(config, outputDir) {
-  const dir = outputDir || config._outputDir;
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
-}
 
 function getMimeExtension(mimeType) {
   const map = {
@@ -185,7 +281,7 @@ function formatToolsAuto(result) {
   return lines.join('\n');
 }
 
-function formatCallResultAuto(result, config, outputDir) {
+function formatCallResultAuto(result, config, sessionName, outputDir) {
   const output = [];
   
   // Handle structured content
@@ -202,14 +298,14 @@ function formatCallResultAuto(result, config, outputDir) {
           break;
           
         case 'image': {
-          const dir = getOutputDir(config, outputDir);
+          const dir = getOutputDir(config, sessionName, outputDir);
           const filepath = saveBase64File(item.data, item.mimeType, dir, 'image');
           output.push(`[Image saved: ${filepath}]`);
           break;
         }
         
         case 'audio': {
-          const dir = getOutputDir(config, outputDir);
+          const dir = getOutputDir(config, sessionName, outputDir);
           const filepath = saveBase64File(item.data, item.mimeType, dir, 'audio');
           output.push(`[Audio saved: ${filepath}]`);
           break;
@@ -224,7 +320,7 @@ function formatCallResultAuto(result, config, outputDir) {
             if (item.resource.text) {
               output.push(item.resource.text);
             } else if (item.resource.blob) {
-              const dir = getOutputDir(config, outputDir);
+              const dir = getOutputDir(config, sessionName, outputDir);
               const mimeType = item.resource.mimeType || 'application/octet-stream';
               const filepath = saveBase64File(item.resource.blob, mimeType, dir, 'resource');
               output.push(`[Resource saved: ${filepath}]`);
@@ -247,34 +343,49 @@ function formatCallResultAuto(result, config, outputDir) {
 }
 
 async function main() {
-  const { config: configPath, command, toolArgs, daemonPort, format, outputDir } = parseArgs(args);
+  const { config: configPath, session, command, toolArgs, format, outputDir, _daemonPort } = parseArgs(args);
   
   if (!command) {
     printUsage();
     process.exit(0);
   }
   
+  // sessions command doesn't require session name
+  if (command === 'sessions') {
+    const config = loadConfig(configPath);
+    await listSessions(config, format);
+    return;
+  }
+  
+  // daemon-run is internal command
+  if (command === 'daemon-run') {
+    const config = loadConfig(configPath);
+    await runDaemon(config, session, _daemonPort);
+    return;
+  }
+  
+  if (!session) {
+    console.error('Error: --session is required (or set MCP_SESSION environment variable)');
+    process.exit(1);
+  }
+  
   const config = loadConfig(configPath);
   
   switch (command) {
     case 'start':
-      await startDaemon(config, daemonPort);
+      await startDaemon(config, session);
       break;
     case 'stop':
-      await stopDaemon(config);
+      await stopDaemon(config, session);
       break;
     case 'status':
-      await statusDaemon(config, format);
+      await statusDaemon(config, session, format);
       break;
     case 'tools':
-      await listTools(config, format);
+      await listTools(config, session, format);
       break;
     case 'call':
-      await callTool(config, toolArgs, format, outputDir);
-      break;
-    case 'daemon-run':
-      // Internal command - run as daemon process
-      await runDaemon(config, daemonPort);
+      await callTool(config, session, toolArgs, format, outputDir);
       break;
     default:
       console.error(`Unknown command: ${command}`);
@@ -285,93 +396,98 @@ async function main() {
 
 // ============ Daemon Control ============
 
-async function startDaemon(config, port) {
-  const pidFile = path.join(config._stateDir, 'daemon.pid');
-  const portFile = path.join(config._stateDir, 'daemon.port');
-  const logFile = path.join(config._stateDir, 'daemon.log');
+async function startDaemon(config, sessionName) {
+  const existingSession = getSession(config, sessionName);
   
   // Check if already running
-  if (fs.existsSync(pidFile)) {
-    const pid = parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
+  if (existingSession) {
     try {
-      process.kill(pid, 0);
-      console.log(`Daemon already running (PID: ${pid})`);
+      process.kill(existingSession.pid, 0);
+      console.log(`Session '${sessionName}' already running (PID: ${existingSession.pid}, port: ${existingSession.port})`);
       return;
     } catch (e) {
-      fs.unlinkSync(pidFile);
+      // Process not running, clean up
+      deleteSession(config, sessionName);
     }
   }
   
+  // Find available port
+  const port = await findAvailablePort(config);
+  
   // Start daemon process
+  const logFile = getLogFile(config, sessionName);
   const out = fs.openSync(logFile, 'a');
   const err = fs.openSync(logFile, 'a');
   
-  const configAbsPath = path.resolve(config._configDir, path.basename(args[args.indexOf('--config') + 1]));
-  
-  const child = spawn('node', [__filename, '--config', configAbsPath, '--port', port.toString(), 'daemon-run'], {
+  const child = spawn('node', [
+    __filename,
+    '--config', config._configPath,
+    '--session', sessionName,
+    '--_port', port.toString(),
+    'daemon-run'
+  ], {
     detached: true,
     stdio: ['ignore', out, err],
     env: { ...process.env, ...config.env }
   });
   
-  fs.writeFileSync(pidFile, child.pid.toString());
-  fs.writeFileSync(portFile, port.toString());
+  // Save session info
+  setSession(config, sessionName, {
+    pid: child.pid,
+    port: port,
+    startedAt: new Date().toISOString()
+  });
+  
   child.unref();
   
   // Wait and check
   await sleep(2000);
   
   try {
-    const status = await httpGet(`http://localhost:${port}/status`);
-    console.log(`Daemon started (PID: ${child.pid}, port: ${port})`);
+    await httpGet(`http://localhost:${port}/status`);
+    console.log(`Session '${sessionName}' started (PID: ${child.pid}, port: ${port})`);
     console.log(`Server: ${config.name}`);
   } catch (e) {
     console.error('Failed to start daemon. Check logs:', logFile);
+    deleteSession(config, sessionName);
   }
 }
 
-async function stopDaemon(config) {
-  const pidFile = path.join(config._stateDir, 'daemon.pid');
-  const portFile = path.join(config._stateDir, 'daemon.port');
+async function stopDaemon(config, sessionName) {
+  const session = getSession(config, sessionName);
   
-  if (!fs.existsSync(pidFile)) {
-    console.log('Daemon not running');
+  if (!session) {
+    console.log(`Session '${sessionName}' not running`);
     return;
   }
   
-  const pid = parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
   try {
-    process.kill(pid, 'SIGTERM');
-    console.log(`Daemon stopped (PID: ${pid})`);
+    process.kill(session.pid, 'SIGTERM');
+    console.log(`Session '${sessionName}' stopped (PID: ${session.pid})`);
   } catch (e) {
     console.log('Daemon process not found');
   }
   
-  if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
-  if (fs.existsSync(portFile)) fs.unlinkSync(portFile);
+  deleteSession(config, sessionName);
 }
 
-async function statusDaemon(config, format) {
-  const pidFile = path.join(config._stateDir, 'daemon.pid');
-  const portFile = path.join(config._stateDir, 'daemon.port');
+async function statusDaemon(config, sessionName, format) {
+  const session = getSession(config, sessionName);
   
-  if (!fs.existsSync(pidFile)) {
-    console.log('Daemon not running');
+  if (!session) {
+    console.log(`Session '${sessionName}' not running`);
     return;
   }
   
-  const pid = parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
-  const port = fs.existsSync(portFile) ? parseInt(fs.readFileSync(portFile, 'utf8'), 10) : 8940;
-  
   try {
-    process.kill(pid, 0);
-    const status = await httpGet(`http://localhost:${port}/status`);
+    process.kill(session.pid, 0);
+    const status = await httpGet(`http://localhost:${session.port}/status`);
     
     if (format === 'json') {
       console.log(status);
     } else {
       const parsed = JSON.parse(status);
-      console.log(`Daemon running (PID: ${pid}, port: ${port})`);
+      console.log(`Session '${sessionName}' running (PID: ${session.pid}, port: ${session.port})`);
       console.log(`Server: ${parsed.server}`);
       console.log(`Connected: ${parsed.connected}`);
       if (parsed.lastError) {
@@ -379,22 +495,46 @@ async function statusDaemon(config, format) {
       }
     }
   } catch (e) {
-    console.log(`Daemon not responding (PID: ${pid})`);
+    console.log(`Session '${sessionName}' not responding (PID: ${session.pid})`);
   }
 }
 
-async function listTools(config, format) {
-  const portFile = path.join(config._stateDir, 'daemon.port');
+async function listSessions(config, format) {
+  const sessions = loadSessions(config);
   
-  if (!fs.existsSync(portFile)) {
-    console.error('Daemon not running. Start it first.');
+  if (format === 'json') {
+    console.log(JSON.stringify(sessions, null, 2));
+    return;
+  }
+  
+  const entries = Object.entries(sessions);
+  if (entries.length === 0) {
+    console.log('No active sessions');
+    return;
+  }
+  
+  for (const [name, info] of entries) {
+    let status = 'unknown';
+    try {
+      process.kill(info.pid, 0);
+      status = 'running';
+    } catch (e) {
+      status = 'dead';
+    }
+    console.log(`${name.padEnd(20)} PID: ${info.pid}, port: ${info.port}, status: ${status}`);
+  }
+}
+
+async function listTools(config, sessionName, format) {
+  const session = getSession(config, sessionName);
+  
+  if (!session) {
+    console.error(`Session '${sessionName}' not running. Start it first.`);
     process.exit(1);
   }
   
-  const port = parseInt(fs.readFileSync(portFile, 'utf8'), 10);
-  
   try {
-    const result = await httpGet(`http://localhost:${port}/tools`);
+    const result = await httpGet(`http://localhost:${session.port}/tools`);
     
     if (format === 'json') {
       console.log(result);
@@ -408,20 +548,19 @@ async function listTools(config, format) {
   }
 }
 
-async function callTool(config, toolArgs, format, outputDir) {
+async function callTool(config, sessionName, toolArgs, format, outputDir) {
   if (toolArgs.length === 0) {
-    console.error('Usage: mcp-skill-client --config <config> call <tool> [key=value...]');
+    console.error('Usage: mcp-skill-client --config <config> --session <name> call <tool> [key=value...]');
     process.exit(1);
   }
   
-  const portFile = path.join(config._stateDir, 'daemon.port');
+  const session = getSession(config, sessionName);
   
-  if (!fs.existsSync(portFile)) {
-    console.error('Daemon not running. Start it first.');
+  if (!session) {
+    console.error(`Session '${sessionName}' not running. Start it first.`);
     process.exit(1);
   }
   
-  const port = parseInt(fs.readFileSync(portFile, 'utf8'), 10);
   const toolName = toolArgs[0];
   const toolArguments = {};
   
@@ -442,7 +581,7 @@ async function callTool(config, toolArgs, format, outputDir) {
   }
   
   try {
-    const result = await httpPost(`http://localhost:${port}/call`, {
+    const result = await httpPost(`http://localhost:${session.port}/call`, {
       tool: toolName,
       arguments: toolArguments
     });
@@ -451,7 +590,7 @@ async function callTool(config, toolArgs, format, outputDir) {
       console.log(result);
     } else {
       const parsed = JSON.parse(result);
-      console.log(formatCallResultAuto(parsed, config, outputDir));
+      console.log(formatCallResultAuto(parsed, config, sessionName, outputDir));
     }
   } catch (e) {
     console.error('Error:', e.message);
@@ -461,8 +600,8 @@ async function callTool(config, toolArgs, format, outputDir) {
 
 // ============ Daemon Process ============
 
-async function runDaemon(config, port) {
-  console.log(`[${new Date().toISOString()}] Starting daemon for ${config.name}`);
+async function runDaemon(config, sessionName, port) {
+  console.log(`[${new Date().toISOString()}] Starting daemon for ${config.name} (session: ${sessionName})`);
   
   const client = new Client({
     name: 'mcp-skill-client',
@@ -525,7 +664,7 @@ async function runDaemon(config, port) {
     
     if (url.pathname === '/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ connected, lastError, server: config.name }));
+      res.end(JSON.stringify({ connected, lastError, server: config.name, session: sessionName }));
       return;
     }
     
